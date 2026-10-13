@@ -46,8 +46,18 @@ extern "C"
 		FREERDP_AV1_CONTEXT_OPTION_PROFILE,
 		FREERDP_AV1_CONTEXT_OPTION_RATECONTROL,
 		FREERDP_AV1_CONTEXT_OPTION_BITRATE,
-		FREERDP_AV1_CONTEXT_OPTION_USAGETYPE
+		FREERDP_AV1_CONTEXT_OPTION_USAGETYPE,
+		FREERDP_AV1_CONTEXT_OPTION_QUALITY,  /**< freerdp-m: 0 (worst) - 100 (best) for the
+		                                      * FREERDP_AV1_CQ and FREERDP_AV1_Q rate controls */
+		FREERDP_AV1_CONTEXT_OPTION_KEYFRAME, /**< freerdp-m, set only: encode the next frame as a
+		                                      * key frame */
+		FREERDP_AV1_CONTEXT_OPTION_HARDWARE /**< freerdp-m, get only: 1 if NVENC or NVDEC is used */
 	} FREERDP_AV1_CONTEXT_OPTION;
+
+/** freerdp-m: the AV1 codec encodes with NVENC and decodes with NVDEC when the computer can, see
+ *  FREERDP_AV1_CONTEXT_OPTION_QUALITY, FREERDP_AV1_CONTEXT_OPTION_KEYFRAME and
+ *  FREERDP_AV1_CONTEXT_OPTION_HARDWARE. */
+#define FREERDP_AV1_HARDWARE_SUPPORT 1
 
 	WINPR_ATTR_NODISCARD
 	FREERDP_API BOOL freerdp_av1_context_set_option(FREERDP_AV1_CONTEXT* av1,

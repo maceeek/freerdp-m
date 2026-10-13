@@ -148,6 +148,10 @@ cmake_dependent_option(WITH_VIDEO_FFMPEG "Use FFMPEG for video encoding/decoding
 cmake_dependent_option(
   WITH_FFMPEG_HWACCEL "[experimental] Use FFMPEG hardware acceleration" OFF "WITH_VIDEO_FFMPEG" OFF
 )
+cmake_dependent_option(
+  WITH_AV1_NVIDIA "Encode AV1 with NVENC and decode it with NVDEC (through FFmpeg) when the computer can" ON
+  "WITH_GFX_AV1;WITH_VIDEO_FFMPEG" OFF
+)
 
 if(WITH_VIDEOTOOLBOX OR WITH_VAAPI OR WITH_VAAPI_H264_ENCODING)
   message(

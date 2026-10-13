@@ -1,6 +1,8 @@
 
 #include <stdlib.h>
 
+#include <winpr/environment.h>
+
 #include <freerdp/freerdp.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/codec/av1.h>
@@ -74,13 +76,183 @@ fail:
 	return rc;
 }
 
+#if defined(WITH_AV1_FFMPEG)
+/* A smooth picture, unlike noise it survives lossy compression well enough to compare. */
+static void* allocGradient(uint32_t format, uint32_t width, uint32_t height, uint32_t* pstride)
+{
+	const size_t bpp = FreeRDPGetBytesPerPixel(format);
+	const size_t stride = bpp * width + 32;
+	WINPR_ASSERT(pstride);
+	*pstride = WINPR_ASSERTING_INT_CAST(uint32_t, stride);
+
+	uint8_t* rgb = calloc(stride, height);
+	if (!rgb)
+		return nullptr;
+
+	for (size_t y = 0; y < height; y++)
+	{
+		for (size_t x = 0; x < width; x++)
+		{
+			const BYTE r = (BYTE)(255 * x / width);
+			const BYTE g = (BYTE)(255 * y / height);
+			const BYTE b = (BYTE)(255 - (r + g) / 2);
+			const UINT32 color = FreeRDPGetColor(format, r, g, b, 0xFF);
+			if (!FreeRDPWriteColor(&rgb[y * stride + x * bpp], format, color))
+			{
+				free(rgb);
+				return nullptr;
+			}
+		}
+	}
+	return rgb;
+}
+
+static double meanError(uint32_t format, const BYTE* a, const BYTE* b, uint32_t stride,
+                        uint32_t width, uint32_t height)
+{
+	const size_t bpp = FreeRDPGetBytesPerPixel(format);
+	double sum = 0;
+	for (size_t y = 0; y < height; y++)
+	{
+		for (size_t x = 0; x < width; x++)
+		{
+			BYTE ra = 0;
+			BYTE ga = 0;
+			BYTE ba = 0;
+			BYTE rb = 0;
+			BYTE gb = 0;
+			BYTE bb = 0;
+			FreeRDPSplitColor(FreeRDPReadColor(&a[y * stride + x * bpp], format), format, &ra, &ga,
+			                  &ba, nullptr, nullptr);
+			FreeRDPSplitColor(FreeRDPReadColor(&b[y * stride + x * bpp], format), format, &rb, &gb,
+			                  &bb, nullptr, nullptr);
+			sum += abs(ra - rb) + abs(ga - gb) + abs(ba - bb);
+		}
+	}
+	return sum / (3.0 * width * height);
+}
+
+/* Encodes with NVENC and decodes with NVDEC or, with hwDecoder FALSE, in software, the way a
+ * FreeRDP client without an NVIDIA GPU does. */
+static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, BOOL hwDecoder)
+{
+	BOOL rc = FALSE;
+	BYTE* src = nullptr;
+	BYTE* out = nullptr;
+	RDPGFX_H264_METABLOCK meta = WINPR_C_ARRAY_INIT;
+	FREERDP_AV1_CONTEXT* dec = nullptr;
+	FREERDP_AV1_CONTEXT* enc = freerdp_av1_context_new(TRUE);
+	if (!enc)
+		goto fail;
+
+	if (!hwDecoder)
+		SetEnvironmentVariableA("FREERDP_AV1_HWACCEL", "0");
+	dec = freerdp_av1_context_new(FALSE);
+	SetEnvironmentVariableA("FREERDP_AV1_HWACCEL", nullptr);
+	if (!dec)
+		goto fail;
+
+	if (!freerdp_av1_context_reset(enc, width, height) ||
+	    !freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_RATECONTROL,
+	                                    FREERDP_AV1_CQ) ||
+	    !freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_QUALITY, 90))
+		goto fail;
+	if (!freerdp_av1_context_reset(dec, width, height))
+		goto fail;
+	if ((freerdp_av1_context_get_option(enc, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) != 1) ||
+	    (freerdp_av1_context_get_option(dec, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) !=
+	     (hwDecoder ? 1u : 0u)))
+	{
+		(void)fprintf(stderr, "[%s] unexpected AV1 backend\n", __func__);
+		goto fail;
+	}
+
+	uint32_t stride = 0;
+	uint32_t ostride = 0;
+	src = allocGradient(format, width, height, &stride);
+	out = allocGradient(format, width, height, &ostride);
+	if (!src || !out || (stride != ostride))
+		goto fail;
+	memset(out, 0, 1ull * ostride * height);
+
+	const RECTANGLE_16 rect = { .left = 0, .top = 0, .right = width, .bottom = height };
+	for (size_t frame = 0; frame < 4; frame++)
+	{
+		if (frame == 3)
+		{
+			if (!freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_KEYFRAME, 1))
+				goto fail;
+		}
+
+		uint8_t* dst = nullptr;
+		uint32_t dstsize = 0;
+		free_h264_metablock(&meta);
+		if (freerdp_av1_compress(enc, src, format, stride, width, height, &rect, &dst, &dstsize,
+		                         &meta) <= 0)
+			goto fail;
+		if ((dstsize == 0) || !dst || (meta.numRegionRects != 1))
+			goto fail;
+		if (freerdp_av1_decompress(dec, dst, dstsize, out, format, ostride, width, height, &rect,
+		                           1) < 0)
+			goto fail;
+		const double error = meanError(format, src, out, stride, width, height);
+		(void)fprintf(stderr,
+		              "[%s] %s %" PRIu32 "x%" PRIu32 " frame %" PRIuz ": %" PRIu32
+		              " bytes, mean error %.2f\n",
+		              __func__, hwDecoder ? "NVENC -> NVDEC" : "NVENC -> software", width, height,
+		              frame, dstsize, error);
+		if (error > 3.0)
+			goto fail;
+	}
+	rc = TRUE;
+
+fail:
+	freerdp_av1_context_free(enc);
+	freerdp_av1_context_free(dec);
+	free_h264_metablock(&meta);
+	free(src);
+	free(out);
+	return rc;
+}
+#endif
+
 int TestFreeRDPCodecAV1(int argc, char* argv[])
 {
 	WINPR_UNUSED(argc);
 	WINPR_UNUSED(argv);
 
+#if defined(WITH_AV1_FFMPEG)
+	{
+		FREERDP_AV1_CONTEXT* probe = freerdp_av1_context_new(TRUE);
+		const BOOL nvenc =
+		    probe &&
+		    (freerdp_av1_context_get_option(probe, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) == 1);
+		freerdp_av1_context_free(probe);
+		if (!nvenc)
+			(void)fprintf(stderr, "[%s] skipping NVENC, not available\n", __func__);
+		else
+		{
+			const struct
+			{
+				uint32_t width;
+				uint32_t height;
+			} sizes[] = { { 1920, 1080 }, { 1279, 719 } };
+			const UINT32 formats[] = { PIXEL_FORMAT_BGRA32, PIXEL_FORMAT_RGBX32 };
+			for (size_t f = 0; f < ARRAYSIZE(formats); f++)
+			{
+				for (size_t x = 0; x < ARRAYSIZE(sizes); x++)
+				{
+					if (!testHardware(formats[f], sizes[x].width, sizes[x].height, TRUE) ||
+					    !testHardware(formats[f], sizes[x].width, sizes[x].height, FALSE))
+						return -1;
+				}
+			}
+		}
+	}
+#endif
+
 #if !defined(WITH_LIBAOM)
-	(void)fprintf(stderr, "[%s] skipping, no AV1 encoder support compiled in\n", __func__);
+	(void)fprintf(stderr, "[%s] skipping libaom, not compiled in\n", __func__);
 	return 0;
 #else
 	const UINT32 width = 124;
