@@ -1028,7 +1028,10 @@ static BOOL shadow_client_caps_test_version(RdpgfxServerContext* context, rdpSha
 			if (!freerdp_settings_set_bool(clientSettings, FreeRDP_GfxPlanar, planar))
 				return FALSE;
 #if defined(WITH_GFX_AV1)
-			const BOOL av1 = freerdp_settings_get_bool(srvSettings, FreeRDP_GfxCodecAV1);
+			/* The client setting is off when no AV1 encoder could be prepared, then the
+			 * client gets a standard capability set and H.264. */
+			const BOOL av1 = freerdp_settings_get_bool(srvSettings, FreeRDP_GfxCodecAV1) &&
+			                 freerdp_settings_get_bool(clientSettings, FreeRDP_GfxCodecAV1);
 			if (!freerdp_settings_set_bool(clientSettings, FreeRDP_GfxCodecAV1, av1))
 				return FALSE;
 			const UINT32 av1Profile =
