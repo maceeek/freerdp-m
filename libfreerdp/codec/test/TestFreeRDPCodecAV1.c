@@ -108,13 +108,13 @@ static void* allocGradient(uint32_t format, uint32_t width, uint32_t height, uin
 }
 
 static double meanError(uint32_t format, const BYTE* a, const BYTE* b, uint32_t stride,
-                        uint32_t width, uint32_t height)
+                        uint32_t left, uint32_t top, uint32_t width, uint32_t height)
 {
 	const size_t bpp = FreeRDPGetBytesPerPixel(format);
 	double sum = 0;
-	for (size_t y = 0; y < height; y++)
+	for (size_t y = top; y < top + height; y++)
 	{
-		for (size_t x = 0; x < width; x++)
+		for (size_t x = left; x < left + width; x++)
 		{
 			BYTE ra = 0;
 			BYTE ga = 0;
@@ -134,8 +134,10 @@ static double meanError(uint32_t format, const BYTE* a, const BYTE* b, uint32_t 
 
 /* Encodes with the GPU and decodes with the decoder FREERDP_AV1_HWACCEL=decoder selects:
  * nullptr for the default, "0" in software, the way a FreeRDP client without a GPU does, or
- * "nvidia" / "vaapi". A GPU decoder that is not available is skipped. */
-static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, const char* decoder)
+ * "nvidia" / "vaapi". A GPU decoder that is not available is skipped. profile 0 is 4:2:0,
+ * 1 is 4:4:4 if the GPU can, 4:2:0 otherwise. */
+static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, const char* decoder,
+                         uint32_t profile)
 {
 	BOOL rc = FALSE;
 	BYTE* src = nullptr;
@@ -153,7 +155,8 @@ static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, const
 	if (!dec)
 		goto fail;
 
-	if (!freerdp_av1_context_reset(enc, width, height) ||
+	if (!freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_PROFILE, profile) ||
+	    !freerdp_av1_context_reset(enc, width, height) ||
 	    !freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_RATECONTROL,
 	                                    FREERDP_AV1_CQ) ||
 	    !freerdp_av1_context_set_option(enc, FREERDP_AV1_CONTEXT_OPTION_QUALITY, 90))
@@ -203,13 +206,17 @@ static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, const
 		if (freerdp_av1_decompress(dec, dst, dstsize, out, format, ostride, width, height, &rect,
 		                           1) < 0)
 			goto fail;
-		const double error = meanError(format, src, out, stride, width, height);
+		const double error = meanError(format, src, out, stride, 0, 0, width, height);
+		/* The last column and row keep their colors with odd sizes too */
+		const double edgeError = (meanError(format, src, out, stride, width - 1, 0, 1, height) +
+		                          meanError(format, src, out, stride, 0, height - 1, width, 1)) /
+		                         2.0;
 		(void)fprintf(stderr,
-		              "[%s] GPU -> %s decoder %" PRIu32 "x%" PRIu32 " frame %" PRIuz ": %" PRIu32
-		              " bytes, mean error %.2f\n",
-		              __func__, decoder ? decoder : "default", width, height,
-		              frame, dstsize, error);
-		if (error > 3.0)
+		              "[%s] GPU profile %" PRIu32 " -> %s decoder %" PRIu32 "x%" PRIu32
+		              " frame %" PRIuz ": %" PRIu32 " bytes, mean error %.2f, at the edges %.2f\n",
+		              __func__, profile, decoder ? decoder : "default", width, height, frame,
+		              dstsize, error, edgeError);
+		if ((error > 3.0) || (edgeError > 6.0))
 			goto fail;
 	}
 	rc = TRUE;
@@ -253,9 +260,12 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 					const char* decoders[] = { nullptr, "0", "nvidia", "vaapi" };
 					for (size_t d = 0; d < ARRAYSIZE(decoders); d++)
 					{
-						if (!testHardware(formats[f], sizes[x].width, sizes[x].height,
-						                  decoders[d]))
-							return -1;
+						for (uint32_t profile = 0; profile < 2; profile++)
+						{
+							if (!testHardware(formats[f], sizes[x].width, sizes[x].height,
+							                  decoders[d], profile))
+								return -1;
+						}
 					}
 				}
 			}

@@ -24,6 +24,7 @@
 #include <winpr/path.h>
 #include <winpr/synch.h>
 
+#include <freerdp/codec/color.h>
 #include <freerdp/log.h>
 #include <freerdp/primitives.h>
 
@@ -106,6 +107,9 @@ struct S_AV1_FFMPEG_CONTEXT
 	/* Planar chroma for the YUV primitives, the GPUs use interleaved NV12. */
 	BYTE* chroma[2];
 	size_t chromaSize;
+	/* Encoders: pictures of an odd size, made even */
+	BYTE* padded;
+	size_t paddedSize;
 	BOOL decoded;
 };
 
@@ -632,6 +636,7 @@ void av1_ffmpeg_free(AV1_FFMPEG_CONTEXT* ctx)
 	av_buffer_unref(&ctx->hwdevice);
 	winpr_aligned_free(ctx->chroma[0]);
 	winpr_aligned_free(ctx->chroma[1]);
+	winpr_aligned_free(ctx->padded);
 	free(ctx);
 }
 
@@ -804,6 +809,53 @@ UINT32 av1_ffmpeg_get_option(AV1_FFMPEG_CONTEXT* ctx, FREERDP_AV1_CONTEXT_OPTION
 	}
 }
 
+/* The YUV primitives leave out the chroma of the last column and row of an odd size, which then
+ * shows without color. Copies the picture into an even one with the last column and row repeated.
+ */
+static BOOL av1_ffmpeg_pad(AV1_FFMPEG_CONTEXT* ctx, const BYTE** ppSrcData, DWORD SrcFormat,
+                           UINT32* pnSrcStep, UINT32* pnSrcWidth, UINT32* pnSrcHeight)
+{
+	WINPR_ASSERT(ctx);
+	WINPR_ASSERT(ppSrcData);
+	WINPR_ASSERT(pnSrcStep);
+	WINPR_ASSERT(pnSrcWidth);
+	WINPR_ASSERT(pnSrcHeight);
+
+	const UINT32 nSrcWidth = *pnSrcWidth;
+	const UINT32 nSrcHeight = *pnSrcHeight;
+	const size_t bpp = FreeRDPGetBytesPerPixel(SrcFormat);
+	if ((bpp == 0) || (nSrcWidth == 0) || (nSrcHeight == 0))
+		return FALSE;
+
+	const UINT32 width = align2(nSrcWidth);
+	const UINT32 height = align2(nSrcHeight);
+	const size_t step = bpp * width;
+	const size_t size = step * height;
+	if (size > ctx->paddedSize)
+	{
+		winpr_aligned_free(ctx->padded);
+		ctx->padded = winpr_aligned_malloc(size, 64);
+		ctx->paddedSize = ctx->padded ? size : 0;
+		if (!ctx->padded)
+			return FALSE;
+	}
+
+	for (UINT32 y = 0; y < height; y++)
+	{
+		const BYTE* src = &(*ppSrcData)[1ull * MIN(y, nSrcHeight - 1) * *pnSrcStep];
+		BYTE* dst = &ctx->padded[y * step];
+		memcpy(dst, src, bpp * nSrcWidth);
+		if (width > nSrcWidth)
+			memcpy(&dst[bpp * nSrcWidth], &src[bpp * (nSrcWidth - 1)], bpp);
+	}
+
+	*ppSrcData = ctx->padded;
+	*pnSrcStep = WINPR_ASSERTING_INT_CAST(UINT32, step);
+	*pnSrcWidth = width;
+	*pnSrcHeight = height;
+	return TRUE;
+}
+
 /* Converts the picture into ctx->frame for NVENC, or into NV12 and uploads it for VAAPI. */
 static BOOL av1_ffmpeg_prepare_input(AV1_FFMPEG_CONTEXT* ctx, const BYTE* pSrcData, DWORD SrcFormat,
                                      UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight)
@@ -813,6 +865,12 @@ static BOOL av1_ffmpeg_prepare_input(AV1_FFMPEG_CONTEXT* ctx, const BYTE* pSrcDa
 	primitives_t* prims = primitives_get();
 	if (!prims)
 		return FALSE;
+
+	if (((nSrcWidth % 2) != 0) || ((nSrcHeight % 2) != 0))
+	{
+		if (!av1_ffmpeg_pad(ctx, &pSrcData, SrcFormat, &nSrcStep, &nSrcWidth, &nSrcHeight))
+			return FALSE;
+	}
 
 	const prim_size_t roi = { .width = nSrcWidth, .height = nSrcHeight };
 	if (ctx->type == AV1_HW_CUDA)
