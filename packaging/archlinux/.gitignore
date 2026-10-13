@@ -1,0 +1,5 @@
+/src/
+/pkg/
+/freerdp-m/
+*.pkg.tar.*
+*.log

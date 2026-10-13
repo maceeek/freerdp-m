@@ -1,0 +1,174 @@
+# Maintainer: FreeRDP-M contributors
+#
+# Builds FreeRDP with AV1 encoded by NVENC and decoded by NVDEC from this
+# repository and replaces the freerdp package of Arch Linux / CachyOS. Based on
+# the freerdp PKGBUILD of Arch Linux, with the AV1 codec of the graphics
+# pipeline turned on.
+#
+#   cd packaging/archlinux && makepkg -si
+#
+# Builds the main branch. To build a different branch, append #branch=<name>
+# to the source below.
+
+pkgname=freerdp-m-git
+_name=freerdp-m
+pkgver=3.32.2.r0.g0000000
+_libver=3
+pkgrel=1
+epoch=2
+pkgdesc='Free implementation of the Remote Desktop Protocol (RDP) with AV1 encoded by NVENC and decoded by NVDEC (fork of FreeRDP)'
+arch=(x86_64)
+url='https://github.com/maceeek/freerdp-m'
+license=(Apache-2.0)
+depends=(
+  dav1d
+  fuse3
+  glibc
+  jansson
+  libcups
+  libgcc
+  libstdc++
+  libx11
+  libxcursor
+  libxext
+  libxdamage
+  libxfixes
+  libxkbcommon
+  libxi
+  libxinerama
+  libxkbfile
+  libxrandr
+  libxrender
+  libxtst
+  sdl3
+  sdl3_ttf
+  wayland
+)
+makedepends=(
+  alsa-lib
+  cmake
+  ffmpeg
+  git
+  icu
+  krb5
+  libcbor
+  libfido2
+  libjpeg-turbo
+  libp11
+  libpng
+  libpulse
+  libusb
+  libwebp
+  ninja
+  openssl
+  pam
+  pkcs11-helper
+  xorgproto
+  zlib
+)
+optdepends=('nvidia-utils: AV1 encoding with NVENC and decoding with NVDEC')
+provides=(
+  "freerdp=$epoch:${pkgver%%.r*}"
+  libfreerdp-client$_libver.so
+  libfreerdp-server-proxy$_libver.so
+  libfreerdp-server$_libver.so
+  libfreerdp-shadow-subsystem$_libver.so
+  libfreerdp-shadow$_libver.so
+  libfreerdp$_libver.so
+  libwinpr-tools$_libver.so
+  libwinpr$_libver.so
+)
+conflicts=(freerdp)
+source=("$_name::git+https://github.com/maceeek/freerdp-m.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd $_name
+  local version
+  version=$(sed -n 's/^ *set(RAW_VERSION_STRING "\(.*\)").*/\1/p' cmake/GetProjectVersion.cmake)
+  printf "%s.r%s.g%s" "$version" "$(git rev-list --count "$version"..HEAD 2>/dev/null || git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  # gcc14 buildfix
+  export CFLAGS+=" -Wno-incompatible-pointer-types"
+  export CXXFLAGS+=" -Wno-incompatible-pointer-types"
+
+  local cmake_options=(
+    -B build
+    -D CHANNEL_RDPECAM_CLIENT=ON
+    -D CHANNEL_RDPEWA=ON
+    -D CHANNEL_RDPEWA_CLIENT=ON
+    -D CHANNEL_URBDRC_CLIENT=ON
+    -D CMAKE_BUILD_TYPE=Release
+    -D CMAKE_INSTALL_LIBDIR=lib
+    -D CMAKE_INSTALL_PREFIX=/usr
+    -D CMAKE_SKIP_INSTALL_RPATH=ON
+    -D PROXY_PLUGINDIR=/usr/lib/freerdp/server/proxy/plugins
+    -D RDTK_FORCE_STATIC_BUILD=ON  # prevent file conflicts with freerdp2
+    -D UWAC_FORCE_STATIC_BUILD=ON  # prevent file conflicts with freerdp2
+    -D WINPR_UTILS_IMAGE_JPEG=ON
+    -D WINPR_UTILS_IMAGE_PNG=ON
+    -D WINPR_UTILS_IMAGE_WEBP=ON
+    -D WITH_ALSA=ON
+    -D WITH_AOM=OFF  # no slow software AV1 encoder, AV1 is only offered with NVENC
+    -D WITH_AV1_NVIDIA=ON
+    -D WITH_BINARY_VERSIONING=ON  # prevent file conflicts with freerdp2
+    -D WITH_CHANNELS=ON
+    -D WITH_CLIENT_CHANNELS=ON
+    -D WITH_CLIENT_SDL3=ON
+    -D WITH_CLIENT_SDL2=OFF
+    -D WITH_CUPS=ON
+    -D WITH_DAV1D=ON  # AV1 decoding without NVDEC
+    -D WITH_DSP_FFMPEG=ON
+    -D WITH_FFMPEG=ON
+    -D WITH_FUSE=ON
+    -D WITH_GFX_AV1=ON
+    -D WITH_ICU=ON
+    -D WITH_JPEG=ON
+    -D WITH_PCSC=ON
+    -D WITH_PULSE=ON
+    -D WITH_SERVER=ON
+    -D WITH_SERVER_CHANNELS=ON
+    -D WITH_SWSCALE=ON
+    -D WITH_SYSTEMD=ON
+    -D WITH_VAAPI=ON
+    -D WITH_VERBOSE_WINPR_ASSERT=OFF
+    -D WITH_VIDEO_FFMPEG=ON
+    -D WITH_WAYLAND=ON
+    -D WITH_WINPR_TOOLS=ON
+    -D WITH_X11=ON
+    -G Ninja
+    -S $_name
+    -W no-dev
+  )
+
+  cmake "${cmake_options[@]}"
+  cmake --build build
+}
+
+check() {
+  ctest --test-dir build --output-on-failure --stop-on-failure -j"$(nproc)"
+}
+
+package() {
+  depends+=(
+    alsa-lib libasound.so
+    ffmpeg libavcodec.so libavutil.so libswresample.so libswscale.so
+    icu libicuuc.so
+    krb5 libk5crypto.so libkrb5.so
+    libcbor libcbor.so
+    libfido2 libfido2.so
+    libjpeg-turbo libjpeg.so
+    libpng libpng16.so
+    libpulse libpulse.so
+    libusb libusb-1.0.so
+    libwebp libwebp.so
+    openssl libcrypto.so libssl.so
+    pam libpam.so
+    zlib libz.so
+  )
+
+  DESTDIR="$pkgdir" cmake --install build
+  install -vDm 644 $_name/{ChangeLog,README.md} -t "$pkgdir/usr/share/doc/freerdp/"
+}
