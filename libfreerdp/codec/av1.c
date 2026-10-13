@@ -44,6 +44,12 @@
 #include "av1_ffmpeg.h"
 #endif
 
+#if defined(WITH_LIBAOM)
+#define AV1_SOFTWARE_ENCODER "libaom"
+#else
+#define AV1_SOFTWARE_ENCODER "none"
+#endif
+
 #if defined(WITH_LIBAOM) || defined(WITH_DAV1D) || defined(WITH_AV1_FFMPEG)
 
 #if defined(WITH_LIBYUV)
@@ -56,7 +62,7 @@ struct S_FREERDP_AV1_CONTEXT
 	bool encoder;
 	bool initialized;
 #if defined(WITH_AV1_FFMPEG)
-	AV1_FFMPEG_CONTEXT* hw; /**< NVENC/NVDEC, used instead of libaom/dav1d when set */
+	AV1_FFMPEG_CONTEXT* hw; /**< GPU (NVENC/NVDEC, VAAPI), used instead of libaom/dav1d when set */
 #endif
 #if defined(WITH_LIBAOM)
 	UINT32 quality;
@@ -141,7 +147,7 @@ static INT32 allocate_frame_metablock(UINT32 width, UINT32 height, RDPGFX_H264_M
 #if defined(WITH_LIBAOM)
 static int av1_aom_cq_level(const FREERDP_AV1_CONTEXT* av1)
 {
-	/* Same scale as the NVENC backend: 100 -> 20, 0 -> 45 */
+	/* Same scale as the GPU backends: 100 -> 20, 0 -> 45 */
 	const UINT32 quality = MIN(av1->quality, 100);
 	return 45 - (int)((quality * 25 + 50) / 100);
 }
@@ -412,7 +418,7 @@ INT32 freerdp_av1_compress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, DWORD
 	return allocate_frame_metablock(nSrcWidth, nSrcHeight, meta);
 #else
 	WLog_Print(av1->log, WLOG_ERROR,
-	           "AV1 encoding needs NVENC or libaom, recompile with '-DWITH_AOM=ON'");
+	           "AV1 encoding needs a GPU or libaom, recompile with '-DWITH_AOM=ON'");
 	WINPR_UNUSED(pSrcData);
 	WINPR_UNUSED(SrcFormat);
 	WINPR_UNUSED(nSrcStep);
@@ -610,9 +616,10 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 		if (av1_ffmpeg_has_decoded(av1->hw))
 			return rc;
 
-		/* NVDEC can not decode this stream (e.g. 4:4:4), the software decoder takes over
+		/* The GPU can not decode this stream (e.g. 4:4:4), the software decoder takes over
 		 * with the same data, the first frame of a stream is a key frame. */
-		WLog_Print(av1->log, WLOG_INFO, "Decoding AV1 in software instead of NVDEC");
+		WLog_Print(av1->log, WLOG_INFO, "Decoding AV1 in software instead of %s",
+		           av1_ffmpeg_backend_name(av1->hw));
 		av1_ffmpeg_free(av1->hw);
 		av1->hw = nullptr;
 		if (!freerdp_av1_context_reset(av1, av1->yuvWidth, av1->yuvHeight))
@@ -744,7 +751,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 	return TRUE;
 #else
 	WLog_Print(av1->log, WLOG_ERROR,
-	           "AV1 decoding needs NVDEC, dav1d or libaom, recompile with '-DWITH_DAV1D=ON'");
+	           "AV1 decoding needs a GPU, dav1d or libaom, recompile with '-DWITH_DAV1D=ON'");
 	WINPR_UNUSED(pSrcData);
 	WINPR_UNUSED(SrcSize);
 	WINPR_UNUSED(pDstData);
@@ -766,7 +773,7 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 
 		WLog_Print(av1->log, WLOG_WARN,
 		           "%s does not work at %" PRIu32 "x%" PRIu32 ", using software",
-		           av1->encoder ? "NVENC" : "NVDEC", width, height);
+		           av1_ffmpeg_backend_name(av1->hw), width, height);
 		av1_ffmpeg_free(av1->hw);
 		av1->hw = nullptr;
 	}
@@ -812,7 +819,7 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 		av1->initialized = true;
 #else
 		WLog_Print(av1->log, WLOG_ERROR,
-		           "AV1 encoding needs NVENC or libaom, recompile with '-DWITH_AOM=ON'");
+		           "AV1 encoding needs a GPU or libaom, recompile with '-DWITH_AOM=ON'");
 		return FALSE;
 #endif
 	}
@@ -853,7 +860,7 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 		av1->initialized = true;
 #else
 		WLog_Print(av1->log, WLOG_WARN,
-		           "AV1 decoding needs NVDEC, dav1d or libaom. Recompile with '-DWITH_DAV1D=ON' "
+		           "AV1 decoding needs a GPU, dav1d or libaom. Recompile with '-DWITH_DAV1D=ON' "
 		           "or '-DWITH_AOM=ON'");
 		return FALSE;
 #endif
@@ -925,7 +932,8 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 	{
 #if defined(WITH_AV1_FFMPEG)
 		ctx->hw = av1_ffmpeg_new(ctx->log, TRUE);
-		WLog_Print(ctx->log, WLOG_DEBUG, "AV1 encoder: %s", ctx->hw ? "NVENC" : "libaom");
+		WLog_Print(ctx->log, WLOG_DEBUG, "AV1 encoder: %s",
+		           ctx->hw ? av1_ffmpeg_backend_name(ctx->hw) : AV1_SOFTWARE_ENCODER);
 #endif
 #if defined(WITH_LIBAOM)
 		ctx->quality = 70;
@@ -948,7 +956,7 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 		if (!ctx->hw)
 		{
 			WLog_Print(ctx->log, WLOG_DEBUG,
-			           "AV1 encoding needs NVENC or libaom, recompile with '-DWITH_AOM=ON'");
+			           "AV1 encoding needs a GPU or libaom, recompile with '-DWITH_AOM=ON'");
 			goto fail;
 		}
 #else
@@ -961,7 +969,8 @@ FREERDP_AV1_CONTEXT* freerdp_av1_context_new(BOOL Compressor)
 	{
 #if defined(WITH_AV1_FFMPEG)
 		ctx->hw = av1_ffmpeg_new(ctx->log, FALSE);
-		WLog_Print(ctx->log, WLOG_DEBUG, "AV1 decoder: %s", ctx->hw ? "NVDEC" : "software");
+		WLog_Print(ctx->log, WLOG_DEBUG, "AV1 decoder: %s",
+		           ctx->hw ? av1_ffmpeg_backend_name(ctx->hw) : "software");
 #endif
 #if defined(WITH_LIBAOM) && !defined(WITH_DAV1D)
 		ctx->iface = aom_codec_av1_dx();

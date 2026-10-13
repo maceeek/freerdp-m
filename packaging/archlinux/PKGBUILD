@@ -1,9 +1,9 @@
 # Maintainer: FreeRDP-M contributors
 #
-# Builds FreeRDP with AV1 encoded by NVENC and decoded by NVDEC from this
-# repository and replaces the freerdp package of Arch Linux / CachyOS. Based on
-# the freerdp PKGBUILD of Arch Linux, with the AV1 codec of the graphics
-# pipeline turned on.
+# Builds FreeRDP with AV1 encoded and decoded by the GPU (NVENC/NVDEC, VAAPI)
+# from this repository and replaces the freerdp package of Arch Linux /
+# CachyOS. Based on the freerdp PKGBUILD of Arch Linux, with the AV1 codec of
+# the graphics pipeline turned on.
 #
 #   cd packaging/archlinux && makepkg -si
 #
@@ -16,7 +16,7 @@ pkgver=3.32.2.r0.g0000000
 _libver=3
 pkgrel=1
 epoch=2
-pkgdesc='Free implementation of the Remote Desktop Protocol (RDP) with AV1 encoded by NVENC and decoded by NVDEC (fork of FreeRDP)'
+pkgdesc='Free implementation of the Remote Desktop Protocol (RDP) with AV1 encoded and decoded by NVIDIA, AMD and Intel GPUs (fork of FreeRDP)'
 arch=(x86_64)
 url='https://github.com/maceeek/freerdp-m'
 license=(Apache-2.0)
@@ -27,6 +27,7 @@ depends=(
   jansson
   libcups
   libgcc
+  libva
   libstdc++
   libx11
   libxcursor
@@ -66,7 +67,9 @@ makedepends=(
   xorgproto
   zlib
 )
-optdepends=('nvidia-utils: AV1 encoding with NVENC and decoding with NVDEC')
+optdepends=('nvidia-utils: AV1 encoding with NVENC and decoding with NVDEC'
+            'mesa: AV1 encoding and decoding with VAAPI on AMD GPUs'
+            'intel-media-driver: AV1 encoding and decoding with VAAPI on Intel GPUs')
 provides=(
   "freerdp=$epoch:${pkgver%%.r*}"
   libfreerdp-client$_libver.so
@@ -111,8 +114,9 @@ build() {
     -D WINPR_UTILS_IMAGE_PNG=ON
     -D WINPR_UTILS_IMAGE_WEBP=ON
     -D WITH_ALSA=ON
-    -D WITH_AOM=OFF  # no slow software AV1 encoder, AV1 is only offered with NVENC
-    -D WITH_AV1_NVIDIA=ON
+    -D WITH_AOM=OFF  # no slow software AV1 encoder, without a GPU encoder H.264 is used
+    -D WITH_AV1_HWACCEL=ON
+    -D WITH_AV1_VAAPI=ON
     -D WITH_BINARY_VERSIONING=ON  # prevent file conflicts with freerdp2
     -D WITH_CHANNELS=ON
     -D WITH_CLIENT_CHANNELS=ON

@@ -51,10 +51,12 @@ extern "C"
 		                                      * FREERDP_AV1_CQ and FREERDP_AV1_Q rate controls */
 		FREERDP_AV1_CONTEXT_OPTION_KEYFRAME, /**< freerdp-m, set only: encode the next frame as a
 		                                      * key frame */
-		FREERDP_AV1_CONTEXT_OPTION_HARDWARE /**< freerdp-m, get only: 1 if NVENC or NVDEC is used */
+		FREERDP_AV1_CONTEXT_OPTION_HARDWARE /**< freerdp-m, get only: 1 if a GPU encodes or decodes
+		                                      * (NVENC/NVDEC or VAAPI) */
 	} FREERDP_AV1_CONTEXT_OPTION;
 
-/** freerdp-m: the AV1 codec encodes with NVENC and decodes with NVDEC when the computer can, see
+/** freerdp-m: the AV1 codec encodes and decodes with the GPU when the computer can (NVENC/NVDEC on
+ *  NVIDIA, VAAPI on AMD and Intel), see
  *  FREERDP_AV1_CONTEXT_OPTION_QUALITY, FREERDP_AV1_CONTEXT_OPTION_KEYFRAME and
  *  FREERDP_AV1_CONTEXT_OPTION_HARDWARE. */
 #define FREERDP_AV1_HARDWARE_SUPPORT 1

@@ -1,6 +1,7 @@
 /**
  * FreeRDP: A Remote Desktop Protocol Implementation
- * AV1 Bitmap Compression, NVIDIA hardware backend (NVENC/NVDEC through FFmpeg)
+ * AV1 Bitmap Compression, hardware backends through FFmpeg:
+ * NVENC/NVDEC on NVIDIA GPUs and VAAPI on AMD (and Intel) GPUs
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,17 +26,22 @@
 
 typedef struct S_AV1_FFMPEG_CONTEXT AV1_FFMPEG_CONTEXT;
 
-/** @brief Whether the hardware backend may be used, FREERDP_AV1_HWACCEL=0 turns it off. */
+/** @brief Whether the hardware backend may be used, FREERDP_AV1_HWACCEL=0 turns it off,
+ *  =nvidia or =vaapi limits it to one. */
 WINPR_ATTR_NODISCARD
 FREERDP_LOCAL BOOL av1_ffmpeg_enabled(void);
 
-/** @brief Whether this computer can encode AV1 with NVENC, probed once per process. */
+/** @brief Whether a GPU of this computer can encode AV1, probed once per process. */
 WINPR_ATTR_NODISCARD
 FREERDP_LOCAL BOOL av1_ffmpeg_encoder_available(void);
 
 FREERDP_LOCAL void av1_ffmpeg_free(AV1_FFMPEG_CONTEXT* ctx);
 
-/** @brief Create an NVENC encoder or NVDEC decoder.
+/** @brief "NVENC", "NVDEC" or "VAAPI" */
+WINPR_ATTR_NODISCARD
+FREERDP_LOCAL const char* av1_ffmpeg_backend_name(const AV1_FFMPEG_CONTEXT* ctx);
+
+/** @brief Create a GPU encoder or decoder: NVENC/NVDEC first, then VAAPI.
  *
  *  @return nullptr if the hardware is not available.
  */

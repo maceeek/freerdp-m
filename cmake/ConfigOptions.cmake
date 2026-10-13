@@ -149,8 +149,17 @@ cmake_dependent_option(
   WITH_FFMPEG_HWACCEL "[experimental] Use FFMPEG hardware acceleration" OFF "WITH_VIDEO_FFMPEG" OFF
 )
 cmake_dependent_option(
-  WITH_AV1_NVIDIA "Encode AV1 with NVENC and decode it with NVDEC (through FFmpeg) when the computer can" ON
+  WITH_AV1_HWACCEL "Encode and decode AV1 with the GPU (through FFmpeg) when the computer can" ON
   "WITH_GFX_AV1;WITH_VIDEO_FFMPEG" OFF
+)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+  set(AV1_VAAPI_DEFAULT ON)
+else()
+  set(AV1_VAAPI_DEFAULT OFF)
+endif()
+cmake_dependent_option(
+  WITH_AV1_VAAPI "Encode and decode AV1 with VAAPI on AMD and Intel GPUs (needs libva)" ${AV1_VAAPI_DEFAULT}
+  "WITH_AV1_HWACCEL" OFF
 )
 
 if(WITH_VIDEOTOOLBOX OR WITH_VAAPI OR WITH_VAAPI_H264_ENCODING)

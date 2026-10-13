@@ -132,9 +132,10 @@ static double meanError(uint32_t format, const BYTE* a, const BYTE* b, uint32_t 
 	return sum / (3.0 * width * height);
 }
 
-/* Encodes with NVENC and decodes with NVDEC or, with hwDecoder FALSE, in software, the way a
- * FreeRDP client without an NVIDIA GPU does. */
-static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, BOOL hwDecoder)
+/* Encodes with the GPU and decodes with the decoder FREERDP_AV1_HWACCEL=decoder selects:
+ * nullptr for the default, "0" in software, the way a FreeRDP client without a GPU does, or
+ * "nvidia" / "vaapi". A GPU decoder that is not available is skipped. */
+static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, const char* decoder)
 {
 	BOOL rc = FALSE;
 	BYTE* src = nullptr;
@@ -145,8 +146,8 @@ static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, BOOL 
 	if (!enc)
 		goto fail;
 
-	if (!hwDecoder)
-		SetEnvironmentVariableA("FREERDP_AV1_HWACCEL", "0");
+	const BOOL software = decoder && (strcmp(decoder, "0") == 0);
+	SetEnvironmentVariableA("FREERDP_AV1_HWACCEL", decoder);
 	dec = freerdp_av1_context_new(FALSE);
 	SetEnvironmentVariableA("FREERDP_AV1_HWACCEL", nullptr);
 	if (!dec)
@@ -159,11 +160,18 @@ static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, BOOL 
 		goto fail;
 	if (!freerdp_av1_context_reset(dec, width, height))
 		goto fail;
+	const UINT32 hwDecoder =
+	    freerdp_av1_context_get_option(dec, FREERDP_AV1_CONTEXT_OPTION_HARDWARE);
 	if ((freerdp_av1_context_get_option(enc, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) != 1) ||
-	    (freerdp_av1_context_get_option(dec, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) !=
-	     (hwDecoder ? 1u : 0u)))
+	    (software && (hwDecoder != 0)))
 	{
 		(void)fprintf(stderr, "[%s] unexpected AV1 backend\n", __func__);
+		goto fail;
+	}
+	if (decoder && !software && (hwDecoder == 0))
+	{
+		(void)fprintf(stderr, "[%s] skipping the %s decoder, not available\n", __func__, decoder);
+		rc = TRUE;
 		goto fail;
 	}
 
@@ -197,9 +205,9 @@ static BOOL testHardware(uint32_t format, uint32_t width, uint32_t height, BOOL 
 			goto fail;
 		const double error = meanError(format, src, out, stride, width, height);
 		(void)fprintf(stderr,
-		              "[%s] %s %" PRIu32 "x%" PRIu32 " frame %" PRIuz ": %" PRIu32
+		              "[%s] GPU -> %s decoder %" PRIu32 "x%" PRIu32 " frame %" PRIuz ": %" PRIu32
 		              " bytes, mean error %.2f\n",
-		              __func__, hwDecoder ? "NVENC -> NVDEC" : "NVENC -> software", width, height,
+		              __func__, decoder ? decoder : "default", width, height,
 		              frame, dstsize, error);
 		if (error > 3.0)
 			goto fail;
@@ -224,12 +232,12 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 #if defined(WITH_AV1_FFMPEG)
 	{
 		FREERDP_AV1_CONTEXT* probe = freerdp_av1_context_new(TRUE);
-		const BOOL nvenc =
+		const BOOL gpu =
 		    probe &&
 		    (freerdp_av1_context_get_option(probe, FREERDP_AV1_CONTEXT_OPTION_HARDWARE) == 1);
 		freerdp_av1_context_free(probe);
-		if (!nvenc)
-			(void)fprintf(stderr, "[%s] skipping NVENC, not available\n", __func__);
+		if (!gpu)
+			(void)fprintf(stderr, "[%s] skipping GPU encoding, not available\n", __func__);
 		else
 		{
 			const struct
@@ -242,9 +250,13 @@ int TestFreeRDPCodecAV1(int argc, char* argv[])
 			{
 				for (size_t x = 0; x < ARRAYSIZE(sizes); x++)
 				{
-					if (!testHardware(formats[f], sizes[x].width, sizes[x].height, TRUE) ||
-					    !testHardware(formats[f], sizes[x].width, sizes[x].height, FALSE))
-						return -1;
+					const char* decoders[] = { nullptr, "0", "nvidia", "vaapi" };
+					for (size_t d = 0; d < ARRAYSIZE(decoders); d++)
+					{
+						if (!testHardware(formats[f], sizes[x].width, sizes[x].height,
+						                  decoders[d]))
+							return -1;
+					}
 				}
 			}
 		}
