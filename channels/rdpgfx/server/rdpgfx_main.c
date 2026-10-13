@@ -596,6 +596,9 @@ rdpgfx_estimate_surface_command(const RDPGFX_SURFACE_COMMAND* cmd)
 		case RDPGFX_CODECID_CAPROGRESSIVE_V2:
 			return RDPGFX_WIRE_TO_SURFACE_PDU_2_SIZE + cmd->length;
 
+#if defined(WITH_GFX_AV1)
+		case RDPGFX_CODECID_AV1: /* written like AVC420 */
+#endif
 		case RDPGFX_CODECID_AVC420:
 			havc420 = (RDPGFX_AVC420_BITMAP_STREAM*)cmd->extra;
 			h264Size = rdpgfx_estimate_h264_avc420(havc420);
