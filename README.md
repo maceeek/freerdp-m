@@ -53,19 +53,39 @@ is created:
 - AV1 4:4:4 (`/gfx:AV1:i444`, the default profile) is encoded when NVENC can,
   otherwise 4:2:0; VAAPI always encodes 4:2:0. The GPUs only decode 4:2:0, a
   4:4:4 stream from another server is decoded with dav1d.
-- If the GPU can not decode a stream at all, dav1d takes over with the first
-  frame.
+- If the GPU reports an unsupported pixel format or device failure before
+  producing its first picture, dav1d takes over. Invalid AV1 input alone does
+  not blacklist the GPU: a subsequent key frame can still start decoding.
 - The colour conversion is the one of the other FreeRDP AV1 implementations
   (BT.709, full range), so NVENC streams decode correctly in upstream
   FreeRDP clients built with AV1 and the other way around.
 - `FREERDP_AV1_HWACCEL=0` turns the GPU off, e.g. to compare with the
   software implementation, `=nvidia` or `=vaapi` only uses one of them.
-- With VAAPI the constant quality rate controls (`FREERDP_AV1_CQ`,
-  `FREERDP_AV1_Q`) use a constant quantizer, not every driver has a constant
-  quality mode with a bitrate limit.
+- With VAAPI, `FREERDP_AV1_CQ` with a nonzero bitrate ceiling uses VBR so the
+  ceiling is honored without requiring QVBR support. Without a ceiling it uses
+  a constant quantizer, as does `FREERDP_AV1_Q`. Rate-controlled encoders use a
+  100 ms buffer to avoid half-second bursts.
 - `/gfx:AV1` enables AV1 in the clients (it is on by default with
   `/gfx`). Upstream FreeRDP 3.32 turned it *off* with a plain `/gfx:AV1`,
   that is fixed here.
+
+### Decoder diagnostics
+
+INFO console messages are flushed when output is piped or captured by journald,
+so backend selection is visible without waiting for the process to exit.
+
+At normal log level, `VAAPI decodes AV1 on ...` identifies the selected render
+node and driver, and `AV1 decoder: VAAPI (GPU), first picture ...` confirms an
+actual hardware-decoded picture. NVDEC has the same first-picture message.
+`AV1 decoder: dav1d (software, automatic threads, frame delay 1)` identifies the
+software path. Dav1d uses parallel workers while retaining a one-frame latency
+limit. Auto detection on Linux skips CUDA when the NVIDIA kernel driver is
+absent; `FREERDP_AV1_HWACCEL=nvidia` explicitly probes it regardless.
+
+Hardware decode statistics periodically report frames and CPU readback time.
+The downloaded NV12 picture is reused, but conversion and presentation still
+run through CPU images. Hardware availability alone is not a zero-copy display
+path. Backend selection and initial packet errors must be checked separately.
 
 ### API
 

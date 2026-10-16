@@ -27,6 +27,9 @@ endif()
 
 if(WITH_GFX_AV1)
   list(APPEND TESTS TestFreeRDPCodecAV1.c)
+  if(WITH_DAV1D OR WITH_AOM)
+    list(APPEND TESTS TestFreeRDPCodecAV1Recovery.c)
+  endif()
 endif()
 
 if(BUILD_TESTING_INTERNAL)

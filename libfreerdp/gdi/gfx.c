@@ -487,6 +487,9 @@ static UINT gdi_SurfaceCommand_AV1(rdpGdi* gdi, RdpgfxClientContext* context,
 		return CHANNEL_RC_OK;
 	}
 
+	if (rc == 0)
+		return CHANNEL_RC_OK;
+
 	for (UINT32 i = 0; i < meta->numRegionRects; i++)
 	{
 		if (!region16_union_rect(&(surface->invalidRegion), &(surface->invalidRegion),
@@ -1545,8 +1548,8 @@ static UINT gdi_SurfaceToSurface(RdpgfxClientContext* context,
 		{
 			const RDPGFX_POINT16* destPt = &surfaceToSurface->destPts[index];
 			const RECTANGLE_16 rect = { destPt->x, destPt->y,
-				                        (UINT16)MIN(UINT16_MAX, destPt->x + nWidth),
-				                        (UINT16)MIN(UINT16_MAX, destPt->y + nHeight) };
+			                            (UINT16)MIN(UINT16_MAX, destPt->x + nWidth),
+			                            (UINT16)MIN(UINT16_MAX, destPt->y + nHeight) };
 			if (!is_rect_valid(&rect, surfaceDst->width, surfaceDst->height))
 				goto fail;
 
@@ -1701,8 +1704,8 @@ static UINT gdi_CacheToSurface(RdpgfxClientContext* context,
 	{
 		const RDPGFX_POINT16* destPt = &cacheToSurface->destPts[index];
 		const RECTANGLE_16 rect = { destPt->x, destPt->y,
-			                        (UINT16)MIN(UINT16_MAX, destPt->x + cacheEntry->width),
-			                        (UINT16)MIN(UINT16_MAX, destPt->y + cacheEntry->height) };
+		                            (UINT16)MIN(UINT16_MAX, destPt->x + cacheEntry->width),
+		                            (UINT16)MIN(UINT16_MAX, destPt->y + cacheEntry->height) };
 
 		if (rectangle_is_empty(&rect))
 			continue;

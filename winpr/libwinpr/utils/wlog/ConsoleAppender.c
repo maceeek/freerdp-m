@@ -130,7 +130,14 @@ static BOOL WLog_ConsoleAppender_WriteMessage(wLog* log, wLogAppender* appender,
 	}
 
 	if (cmessage->Level != WLOG_OFF)
+	{
 		(void)fprintf(fp, "%s%s\n", prefix, cmessage->TextString);
+		/* stdout is fully buffered under journald or a pipe. Backend selection
+		 * and periodic INFO statistics must be visible before process exit.
+		 * Keep high-volume DEBUG/TRACE output buffered. */
+		if (cmessage->Level >= WLOG_INFO)
+			(void)fflush(fp);
+	}
 #endif
 	return TRUE;
 }

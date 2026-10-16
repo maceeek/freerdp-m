@@ -23,6 +23,7 @@
 #include <winpr/environment.h>
 #include <winpr/path.h>
 #include <winpr/synch.h>
+#include <winpr/sysinfo.h>
 
 #include <freerdp/codec/color.h>
 #include <freerdp/log.h>
@@ -111,6 +112,10 @@ struct S_AV1_FFMPEG_CONTEXT
 	BYTE* padded;
 	size_t paddedSize;
 	BOOL decoded;
+	BOOL canFallback;
+	UINT64 statsStart;
+	UINT64 statsFrames;
+	UINT64 statsDownloadMs;
 };
 
 static INIT_ONCE s_encoder_probe_once = INIT_ONCE_STATIC_INIT;
@@ -220,7 +225,7 @@ static AVBufferRef* av1_vaapi_open_device(wLog* log, BOOL encoder, char* path, s
 		const int rc = av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VAAPI, node, nullptr, 0);
 		if (rc < 0)
 		{
-			WLog_Print(log, WLOG_DEBUG, "No VAAPI on %s: %s", node, av_err2str(rc));
+			WLog_Print(log, WLOG_WARN, "No VAAPI on %s: %s", node, av_err2str(rc));
 			continue;
 		}
 
@@ -229,7 +234,7 @@ static AVBufferRef* av1_vaapi_open_device(wLog* log, BOOL encoder, char* path, s
 		const char* vendor = vaQueryVendorString(va->display);
 		if (av1_vaapi_supports(device, encoder))
 		{
-			WLog_Print(log, WLOG_DEBUG, "VAAPI %s AV1 on %s (%s)", encoder ? "encodes" : "decodes",
+			WLog_Print(log, WLOG_INFO, "VAAPI %s AV1 on %s (%s)", encoder ? "encodes" : "decodes",
 			           node, vendor ? vendor : "?");
 			if (path)
 				(void)_snprintf(path, pathSize, "%s", node);
@@ -314,8 +319,16 @@ static BOOL av1_ffmpeg_set_rate_control(AV1_FFMPEG_CONTEXT* ctx, AVDictionary** 
 				ctx->codec->rc_max_rate = bitrate;
 				break;
 			}
-			/* Not every VAAPI driver has a constant quality mode with a bitrate limit
-			 * (QVBR), constant QP works everywhere. */
+			if (bitrate > 0)
+			{
+				/* CQ with a ceiling must not silently become unlimited CQP.
+				 * Use ordinary VBR rather than requiring driver-specific QVBR. */
+				av_dict_set(options, "rc_mode", "VBR", 0);
+				ctx->codec->bit_rate = bitrate * 3 / 4;
+				ctx->codec->rc_max_rate = bitrate;
+				break;
+			}
+			/* Without a bitrate ceiling, constant QP works on all VAAPI drivers. */
 			WINPR_FALLTHROUGH
 		case FREERDP_AV1_Q:
 			(void)_snprintf(value, sizeof(value), "%d", qindex);
@@ -339,8 +352,8 @@ static BOOL av1_ffmpeg_set_rate_control(AV1_FFMPEG_CONTEXT* ctx, AVDictionary** 
 
 	if (ctx->codec->rc_max_rate > 0)
 	{
-		/* Half a second of video, enough for a key frame without delaying the stream. */
-		ctx->codec->rc_buffer_size = (int)MIN(INT_MAX, ctx->codec->rc_max_rate / 2);
+		/* Limit bursts to 100 ms of video instead of buffering half a second. */
+		ctx->codec->rc_buffer_size = (int)MIN(INT_MAX, ctx->codec->rc_max_rate / 10);
 	}
 	return TRUE;
 }
@@ -516,6 +529,7 @@ static enum AVPixelFormat av1_ffmpeg_get_format(AVCodecContext* codec,
 			return wanted;
 	}
 
+	ctx->canFallback = TRUE;
 	/* E.g. 4:4:4, which the GPUs do not decode */
 	WLog_Print(ctx->log, WLOG_INFO, "%s can not decode this AV1 stream (profile %d)",
 	           av1_ffmpeg_backend_name(ctx), codec->profile);
@@ -558,6 +572,10 @@ static BOOL av1_ffmpeg_open_decoder(AV1_FFMPEG_CONTEXT* ctx)
 		goto fail;
 	}
 	ctx->decoded = FALSE;
+	ctx->canFallback = FALSE;
+	ctx->statsStart = GetTickCount64();
+	ctx->statsFrames = 0;
+	ctx->statsDownloadMs = 0;
 	return TRUE;
 
 fail:
@@ -659,7 +677,13 @@ static BOOL av1_ffmpeg_open_decoder_device(AV1_FFMPEG_CONTEXT* ctx, UINT32 allow
 {
 	WINPR_ASSERT(ctx);
 
-	if (((allowed & AV1_HW_CUDA) != 0) && av1_decoder_has_hw_config(AV_HWDEVICE_TYPE_CUDA))
+	BOOL tryCuda = (allowed & AV1_HW_CUDA) != 0;
+#if defined(__linux__)
+	/* Auto mode on AMD/Intel must not load CUDA just to discover it is absent. */
+	if (allowed != AV1_HW_CUDA)
+		tryCuda = tryCuda && winpr_PathFileExists("/proc/driver/nvidia/version");
+#endif
+	if (tryCuda && av1_decoder_has_hw_config(AV_HWDEVICE_TYPE_CUDA))
 	{
 		const int rc =
 		    av_hwdevice_ctx_create(&ctx->hwdevice, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
@@ -683,7 +707,14 @@ static BOOL av1_ffmpeg_open_decoder_device(AV1_FFMPEG_CONTEXT* ctx, UINT32 allow
 	}
 #endif
 
-	WLog_Print(ctx->log, WLOG_DEBUG, "No GPU decodes AV1");
+	WLog_Print(ctx->log, WLOG_WARN,
+	           "No usable GPU decodes AV1; trying software "
+#if defined(WITH_AV1_VAAPI)
+	           "(VAAPI compiled in)"
+#else
+	           "(VAAPI not compiled in)"
+#endif
+	);
 	return FALSE;
 }
 
@@ -990,11 +1021,22 @@ static INT32 av1_ffmpeg_convert(AV1_FFMPEG_CONTEXT* ctx, BYTE* pDstData, DWORD D
 {
 	WINPR_ASSERT(ctx);
 
-	av_frame_unref(ctx->swframe);
-	ctx->swframe->format = AV_PIX_FMT_NV12;
+	/* Reuse the CPU picture instead of allocating it for every GPU download. */
+	if ((ctx->swframe->width != ctx->frame->width) || (ctx->swframe->height != ctx->frame->height))
+	{
+		av_frame_unref(ctx->swframe);
+		ctx->swframe->format = AV_PIX_FMT_NV12;
+		ctx->swframe->width = ctx->frame->width;
+		ctx->swframe->height = ctx->frame->height;
+		if (av_frame_get_buffer(ctx->swframe, 32) < 0)
+			return -1;
+	}
+	const UINT64 downloadStart = GetTickCount64();
 	const int trc = av_hwframe_transfer_data(ctx->swframe, ctx->frame, 0);
+	ctx->statsDownloadMs += GetTickCount64() - downloadStart;
 	if (trc < 0)
 	{
+		ctx->canFallback = TRUE;
 		WLog_Print(ctx->log, WLOG_ERROR, "Could not download the %s picture as NV12: %s",
 		           av1_ffmpeg_backend_name(ctx), av_err2str(trc));
 		return -1;
@@ -1038,7 +1080,22 @@ static INT32 av1_ffmpeg_convert(AV1_FFMPEG_CONTEXT* ctx, BYTE* pDstData, DWORD D
 		WLog_Print(ctx->log, WLOG_ERROR, "YUV to RGB conversion failed: %d", rc);
 		return -1;
 	}
+	if (!ctx->decoded)
+		WLog_Print(ctx->log, WLOG_INFO, "AV1 decoder: %s (GPU), first picture %" PRIu32 "x%" PRIu32,
+		           av1_ffmpeg_backend_name(ctx), width, height);
 	ctx->decoded = TRUE;
+	ctx->statsFrames++;
+	const UINT64 elapsed = GetTickCount64() - ctx->statsStart;
+	if (elapsed >= 5000)
+	{
+		WLog_Print(ctx->log, WLOG_INFO,
+		           "AV1 %s decode: %" PRIu64 " frames in %" PRIu64 " ms, GPU readback %" PRIu64
+		           " ms",
+		           av1_ffmpeg_backend_name(ctx), ctx->statsFrames, elapsed, ctx->statsDownloadMs);
+		ctx->statsStart = GetTickCount64();
+		ctx->statsFrames = 0;
+		ctx->statsDownloadMs = 0;
+	}
 	return 1;
 }
 
@@ -1062,6 +1119,7 @@ INT32 av1_ffmpeg_decompress(AV1_FFMPEG_CONTEXT* ctx, const BYTE* pSrcData, UINT3
 	ctx->packet->size = 0;
 	if (rc < 0)
 	{
+		ctx->canFallback |= rc != AVERROR_INVALIDDATA;
 		WLog_Print(ctx->log, WLOG_WARN, "avcodec_send_packet: %s", av_err2str(rc));
 		return -1;
 	}
@@ -1074,6 +1132,7 @@ INT32 av1_ffmpeg_decompress(AV1_FFMPEG_CONTEXT* ctx, const BYTE* pSrcData, UINT3
 			break;
 		if (rc < 0)
 		{
+			ctx->canFallback |= rc != AVERROR_INVALIDDATA;
 			WLog_Print(ctx->log, WLOG_WARN, "avcodec_receive_frame: %s", av_err2str(rc));
 			return -1;
 		}
@@ -1085,8 +1144,8 @@ INT32 av1_ffmpeg_decompress(AV1_FFMPEG_CONTEXT* ctx, const BYTE* pSrcData, UINT3
 	return status;
 }
 
-BOOL av1_ffmpeg_has_decoded(const AV1_FFMPEG_CONTEXT* ctx)
+BOOL av1_ffmpeg_can_fallback(const AV1_FFMPEG_CONTEXT* ctx)
 {
 	WINPR_ASSERT(ctx);
-	return ctx->decoded;
+	return !ctx->decoded && ctx->canFallback;
 }

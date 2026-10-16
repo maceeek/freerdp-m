@@ -72,9 +72,9 @@ FREERDP_LOCAL INT32 av1_ffmpeg_decompress(AV1_FFMPEG_CONTEXT* ctx, const BYTE* p
                                           UINT32 SrcSize, BYTE* pDstData, DWORD DstFormat,
                                           UINT32 nDstStep, UINT32 nDstWidth, UINT32 nDstHeight);
 
-/** @brief Whether the decoder produced a picture yet. Until it did, a decoding error means the
- *  hardware cannot decode the stream (e.g. 4:4:4) and the software decoder should take over. */
+/** @brief Whether an initial failure identifies an unsupported GPU format/device.
+ * Invalid stream data alone must not permanently disable hardware decoding. */
 WINPR_ATTR_NODISCARD
-FREERDP_LOCAL BOOL av1_ffmpeg_has_decoded(const AV1_FFMPEG_CONTEXT* ctx);
+FREERDP_LOCAL BOOL av1_ffmpeg_can_fallback(const AV1_FFMPEG_CONTEXT* ctx);
 
 #endif /* FREERDP_LIB_CODEC_AV1_FFMPEG_H */
