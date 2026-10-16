@@ -51,7 +51,7 @@ extern "C"
 		                                      * FREERDP_AV1_CQ and FREERDP_AV1_Q rate controls */
 		FREERDP_AV1_CONTEXT_OPTION_KEYFRAME, /**< freerdp-m, set only: encode the next frame as a
 		                                      * key frame */
-		FREERDP_AV1_CONTEXT_OPTION_HARDWARE /**< freerdp-m, get only: 1 if a GPU encodes or decodes
+		FREERDP_AV1_CONTEXT_OPTION_HARDWARE  /**< freerdp-m, get only: 1 if a GPU encodes or decodes
 		                                      * (NVENC/NVDEC or VAAPI) */
 	} FREERDP_AV1_CONTEXT_OPTION;
 
@@ -77,6 +77,8 @@ extern "C"
 	                                       BYTE** ppDstData, UINT32* pDstSize,
 	                                       RDPGFX_H264_METABLOCK* meta);
 
+	/** @return >0 when a picture was produced, 0 when input was consumed without
+	 * an output picture, or <0 on a decoding error. */
 	WINPR_ATTR_NODISCARD
 	FREERDP_API INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* freerdp_av1, const BYTE* pSrcData,
 	                                         UINT32 SrcSize, BYTE* pDstData, DWORD DstFormat,

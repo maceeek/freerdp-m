@@ -498,7 +498,7 @@ static INT32 av1_dav1d_convert(FREERDP_AV1_CONTEXT* av1, const Dav1dPicture* pic
 		return -2;
 
 	const UINT32 strides[] = { (UINT32)pic->stride[0], (UINT32)pic->stride[1],
-		                       (UINT32)pic->stride[1] };
+	                           (UINT32)pic->stride[1] };
 
 	pstatus_t rec = -1;
 #if defined(WITH_LIBYUV)
@@ -612,8 +612,8 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 		const INT32 rc = av1_ffmpeg_decompress(av1->hw, pSrcData, SrcSize, pDstData, DstFormat,
 		                                       nDstStep, nDstWidth, nDstHeight);
 		if (rc >= 0)
-			return TRUE;
-		if (av1_ffmpeg_has_decoded(av1->hw))
+			return rc;
+		if (!av1_ffmpeg_can_fallback(av1->hw))
 			return rc;
 
 		/* The GPU can not decode this stream (e.g. 4:4:4), the software decoder takes over
@@ -628,6 +628,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 #endif
 
 #if defined(WITH_DAV1D)
+	BOOL decoded = FALSE;
 	Dav1dData data = WINPR_C_ARRAY_INIT;
 	const int wrc = dav1d_data_wrap(&data, pSrcData, SrcSize, av1_dav1d_data_free, nullptr);
 	if (wrc < 0)
@@ -648,6 +649,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 
 		const INT32 rc = av1_dav1d_drain_one(av1, pDstData, DstFormat, nDstStep, nDstWidth,
 		                                     nDstHeight, regionRects, numRegionRect);
+		decoded |= (rc == TRUE);
 		if ((rc != TRUE) && (rc != FALSE))
 		{
 			dav1d_data_unref(&data);
@@ -664,9 +666,10 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 			break;
 		if (rc != TRUE)
 			return rc;
+		decoded = TRUE;
 	}
 
-	return TRUE;
+	return decoded;
 #elif defined(WITH_LIBAOM)
 	const aom_codec_err_t rc = aom_codec_decode(&av1->ctx, pSrcData, SrcSize, nullptr);
 	if (rc != AOM_CODEC_OK)
@@ -675,6 +678,7 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 		return -1;
 	}
 
+	BOOL decoded = FALSE;
 	aom_image_t* img = nullptr;
 	aom_codec_iter_t iter = nullptr;
 	while ((img = aom_codec_get_frame(&av1->ctx, &iter)) != nullptr)
@@ -746,9 +750,10 @@ INT32 freerdp_av1_decompress(FREERDP_AV1_CONTEXT* av1, const BYTE* pSrcData, UIN
 			WLog_Print(av1->log, WLOG_ERROR, "RGB to YUV conversion failed: %d", rec);
 			return -1;
 		}
+		decoded = TRUE;
 	}
 
-	return TRUE;
+	return decoded;
 #else
 	WLog_Print(av1->log, WLOG_ERROR,
 	           "AV1 decoding needs a GPU, dav1d or libaom, recompile with '-DWITH_DAV1D=ON'");
@@ -834,9 +839,9 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 
 		Dav1dSettings settings = WINPR_C_ARRAY_INIT;
 		dav1d_default_settings(&settings);
-		/* Single-threaded: freerdp_av1_decompress() needs its picture back synchronously,
-		 * not held back by frame-parallel decoding. */
-		settings.n_threads = 1;
+		/* Tile/row workers can use the CPU without buffering multiple frames.
+		 * max_frame_delay, not n_threads, controls low-latency output. */
+		settings.n_threads = 0;
 		settings.max_frame_delay = 1;
 
 		const int rc = dav1d_open(&av1->dav1d, &settings);
@@ -846,6 +851,8 @@ BOOL freerdp_av1_context_reset(FREERDP_AV1_CONTEXT* av1, UINT32 width, UINT32 he
 			return FALSE;
 		}
 		av1->initialized = true;
+		WLog_Print(av1->log, WLOG_INFO,
+		           "AV1 decoder: dav1d (software, automatic threads, frame delay 1)");
 #elif defined(WITH_LIBAOM)
 		av1->dcfg.w = width;
 		av1->dcfg.h = height;
